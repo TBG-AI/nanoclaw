@@ -38,6 +38,7 @@ export interface ContainerInput {
   isMain: boolean;
   isScheduledTask?: boolean;
   assistantName?: string;
+  model?: string; // Claude model override (e.g., "claude-sonnet-4-5-20250514")
   secrets?: Record<string, string>;
 }
 

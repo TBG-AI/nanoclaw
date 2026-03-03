@@ -3,6 +3,7 @@ import path from 'path';
 
 import {
   ASSISTANT_NAME,
+  CLAUDE_MODEL,
   IDLE_TIMEOUT,
   POLL_INTERVAL,
   TRIGGER_PATTERN,
@@ -315,6 +316,7 @@ async function runAgent(
         chatJid: realJid(chatJid),
         isMain,
         assistantName: ASSISTANT_NAME,
+        model: group.containerConfig?.model || CLAUDE_MODEL,
       },
       (proc, containerName) =>
         queue.registerProcess(chatJid, proc, containerName, group.folder),
