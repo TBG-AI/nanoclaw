@@ -11,6 +11,7 @@ import {
   OnChatMetadata,
   RegisteredGroup,
 } from '../types.js';
+import { realJid } from '../virtual-jid.js';
 
 // Slack's chat.postMessage API limits text to ~4000 characters per call.
 // Messages exceeding this are split into sequential chunks.
@@ -53,7 +54,8 @@ export class SlackChannel implements Channel {
   private app: App;
   private botUserId: string | undefined;
   private connected = false;
-  private outgoingQueue: Array<{ jid: string; text: string; sender?: string }> = [];
+  private outgoingQueue: Array<{ jid: string; text: string; sender?: string }> =
+    [];
   private flushing = false;
   private userNameCache = new Map<string, string>();
 
@@ -109,12 +111,15 @@ export class SlackChannel implements Channel {
       // Always report metadata for group discovery
       this.opts.onChatMetadata(jid, timestamp, undefined, 'slack', isGroup);
 
-      // Only deliver full messages for registered groups
+      // Only deliver full messages for registered groups.
+      // Check both direct JID match and virtual JIDs whose real JID matches.
       const groups = this.opts.registeredGroups();
-      if (!groups[jid]) return;
+      const hasGroup =
+        !!groups[jid] ||
+        Object.keys(groups).some((gJid) => realJid(gJid) === jid);
+      if (!hasGroup) return;
 
-      const isBotMessage =
-        !!msg.bot_id || msg.user === this.botUserId;
+      const isBotMessage = !!msg.bot_id || msg.user === this.botUserId;
 
       let senderName: string;
       if (isBotMessage) {
@@ -131,7 +136,10 @@ export class SlackChannel implements Channel {
       let content = msg.text;
       if (this.botUserId && !isBotMessage) {
         const mentionPattern = `<@${this.botUserId}>`;
-        if (content.includes(mentionPattern) && !TRIGGER_PATTERN.test(content)) {
+        if (
+          content.includes(mentionPattern) &&
+          !TRIGGER_PATTERN.test(content)
+        ) {
           content = `@${ASSISTANT_NAME} ${content}`;
         }
       }
@@ -160,10 +168,7 @@ export class SlackChannel implements Channel {
       this.botUserId = auth.user_id as string;
       logger.info({ botUserId: this.botUserId }, 'Connected to Slack');
     } catch (err) {
-      logger.warn(
-        { err },
-        'Connected to Slack but failed to get bot user ID',
-      );
+      logger.warn({ err }, 'Connected to Slack but failed to get bot user ID');
     }
 
     this.connected = true;
@@ -226,7 +231,11 @@ export class SlackChannel implements Channel {
    * Send a message as a named sub-agent identity.
    * Uses Slack's chat:write.customize scope to override username and icon.
    */
-  async sendMessageAs(jid: string, text: string, sender: string): Promise<void> {
+  async sendMessageAs(
+    jid: string,
+    text: string,
+    sender: string,
+  ): Promise<void> {
     const channelId = jid.replace(/^slack:/, '');
 
     if (!this.connected) {
@@ -258,7 +267,10 @@ export class SlackChannel implements Channel {
           });
         }
       }
-      logger.info({ jid, sender, length: text.length }, 'Slack sendMessageAs sent');
+      logger.info(
+        { jid, sender, length: text.length },
+        'Slack sendMessageAs sent',
+      );
     } catch (err) {
       this.outgoingQueue.push({ jid, text, sender });
       logger.warn(
@@ -309,9 +321,7 @@ export class SlackChannel implements Channel {
     }
   }
 
-  private async resolveUserName(
-    userId: string,
-  ): Promise<string | undefined> {
+  private async resolveUserName(userId: string): Promise<string | undefined> {
     if (!userId) return undefined;
 
     const cached = this.userNameCache.get(userId);

@@ -9,6 +9,7 @@ import { createTask, deleteTask, getTaskById, updateTask } from './db.js';
 import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
 import { RegisteredGroup } from './types.js';
+import { realJid } from './virtual-jid.js';
 
 export interface IpcDeps {
   sendMessage: (jid: string, text: string, sender?: string) => Promise<void>;
@@ -74,12 +75,20 @@ export function startIpcWatcher(deps: IpcDeps): void {
             try {
               const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
               if (data.type === 'message' && data.chatJid && data.text) {
-                // Authorization: verify this group can send to this chatJid
+                // Authorization: verify this group can send to this chatJid.
+                // For virtual JIDs, the real JID won't be a direct key — check
+                // if any registered group (including virtual) maps to this real
+                // JID and belongs to the source group's folder.
                 const targetGroup = registeredGroups[data.chatJid];
-                if (
+                const isAuthorized =
                   isMain ||
-                  (targetGroup && targetGroup.folder === sourceGroup)
-                ) {
+                  (targetGroup && targetGroup.folder === sourceGroup) ||
+                  Object.entries(registeredGroups).some(
+                    ([jid, group]) =>
+                      realJid(jid) === data.chatJid &&
+                      group.folder === sourceGroup,
+                  );
+                if (isAuthorized) {
                   await deps.sendMessage(data.chatJid, data.text, data.sender);
                   logger.info(
                     { chatJid: data.chatJid, sourceGroup, sender: data.sender },

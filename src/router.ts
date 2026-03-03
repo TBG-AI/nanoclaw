@@ -1,4 +1,5 @@
 import { Channel, NewMessage } from './types.js';
+import { realJid } from './virtual-jid.js';
 
 export function escapeXml(s: string): string {
   if (!s) return '';
@@ -41,5 +42,5 @@ export function findChannel(
   channels: Channel[],
   jid: string,
 ): Channel | undefined {
-  return channels.find((c) => c.ownsJid(jid));
+  return channels.find((c) => c.ownsJid(realJid(jid)));
 }

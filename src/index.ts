@@ -43,6 +43,7 @@ import { startIpcWatcher } from './ipc.js';
 import { findChannel, formatMessages, formatOutbound } from './router.js';
 import { startSchedulerLoop } from './task-scheduler.js';
 import { Channel, NewMessage, RegisteredGroup } from './types.js';
+import { buildTriggerPattern, isVirtualJid, realJid } from './virtual-jid.js';
 import { logger } from './logger.js';
 
 // Re-export for backwards compatibility during refactor
@@ -136,6 +137,10 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   const group = registeredGroups[chatJid];
   if (!group) return true;
 
+  // For virtual JIDs, use the real JID for DB queries and channel routing
+  const queryJid = realJid(chatJid);
+  const isVirtual = isVirtualJid(chatJid);
+
   const channel = findChannel(channels, chatJid);
   if (!channel) {
     logger.warn({ chatJid }, 'No channel owns JID, skipping messages');
@@ -146,17 +151,21 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   const sinceTimestamp = lastAgentTimestamp[chatJid] || '';
   const missedMessages = getMessagesSince(
-    chatJid,
+    queryJid,
     sinceTimestamp,
     ASSISTANT_NAME,
   );
 
   if (missedMessages.length === 0) return true;
 
-  // For non-main groups, check if trigger is required and present
+  // For non-main groups, check if trigger is required and present.
+  // Virtual JID agents use their own trigger pattern; regular groups use the global one.
   if (!isMainGroup && group.requiresTrigger !== false) {
+    const triggerRe = isVirtual
+      ? buildTriggerPattern(group.trigger)
+      : TRIGGER_PATTERN;
     const hasTrigger = missedMessages.some((m) =>
-      TRIGGER_PATTERN.test(m.content.trim()),
+      triggerRe.test(m.content.trim()),
     );
     if (!hasTrigger) return true;
   }
@@ -189,7 +198,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     }, IDLE_TIMEOUT);
   };
 
-  await channel.setTyping?.(chatJid, true);
+  await channel.setTyping?.(queryJid, true);
   let hadError = false;
   let outputSentToUser = false;
 
@@ -204,7 +213,12 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
       logger.info({ group: group.name }, `Agent output: ${raw.slice(0, 200)}`);
       if (text) {
-        await channel.sendMessage(chatJid, text);
+        // Virtual JID agents send as their named identity
+        if (isVirtual && channel.sendMessageAs) {
+          await channel.sendMessageAs(queryJid, text, group.name);
+        } else {
+          await channel.sendMessage(queryJid, text);
+        }
         outputSentToUser = true;
       }
       // Only reset idle timer on actual results, not session-update markers (result: null)
@@ -220,7 +234,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     }
   });
 
-  await channel.setTyping?.(chatJid, false);
+  await channel.setTyping?.(queryJid, false);
   if (idleTimer) clearTimeout(idleTimer);
 
   if (output === 'error' || hadError) {
@@ -298,7 +312,7 @@ async function runAgent(
         prompt,
         sessionId,
         groupFolder: group.folder,
-        chatJid,
+        chatJid: realJid(chatJid),
         isMain,
         assistantName: ASSISTANT_NAME,
       },
@@ -338,9 +352,12 @@ async function startMessageLoop(): Promise<void> {
 
   while (true) {
     try {
-      const jids = Object.keys(registeredGroups);
+      // Query using deduplicated real JIDs so virtual-JID groups see messages
+      // stored under their real channel JID.
+      const allJids = Object.keys(registeredGroups);
+      const queryJids = [...new Set(allJids.map(realJid))];
       const { messages, newTimestamp } = getNewMessages(
-        jids,
+        queryJids,
         lastTimestamp,
         ASSISTANT_NAME,
       );
@@ -352,68 +369,94 @@ async function startMessageLoop(): Promise<void> {
         lastTimestamp = newTimestamp;
         saveState();
 
-        // Deduplicate by group
-        const messagesByGroup = new Map<string, NewMessage[]>();
+        // Deduplicate by real channel JID
+        const messagesByChannel = new Map<string, NewMessage[]>();
         for (const msg of messages) {
-          const existing = messagesByGroup.get(msg.chat_jid);
+          const existing = messagesByChannel.get(msg.chat_jid);
           if (existing) {
             existing.push(msg);
           } else {
-            messagesByGroup.set(msg.chat_jid, [msg]);
+            messagesByChannel.set(msg.chat_jid, [msg]);
           }
         }
 
-        for (const [chatJid, groupMessages] of messagesByGroup) {
-          const group = registeredGroups[chatJid];
-          if (!group) continue;
-
-          const channel = findChannel(channels, chatJid);
-          if (!channel) {
-            logger.warn({ chatJid }, 'No channel owns JID, skipping messages');
-            continue;
+        for (const [chatJid, groupMessages] of messagesByChannel) {
+          // Collect all group JIDs that should receive these messages:
+          // 1. Direct match (non-virtual groups registered with the real JID)
+          // 2. Virtual JIDs whose real JID matches this channel
+          const targetJids: string[] = [];
+          if (registeredGroups[chatJid]) {
+            targetJids.push(chatJid);
           }
-
-          const isMainGroup = group.isMain === true;
-          const needsTrigger = !isMainGroup && group.requiresTrigger !== false;
-
-          // For non-main groups, only act on trigger messages.
-          // Non-trigger messages accumulate in DB and get pulled as
-          // context when a trigger eventually arrives.
-          if (needsTrigger) {
-            const hasTrigger = groupMessages.some((m) =>
-              TRIGGER_PATTERN.test(m.content.trim()),
-            );
-            if (!hasTrigger) continue;
+          for (const jid of allJids) {
+            if (isVirtualJid(jid) && realJid(jid) === chatJid) {
+              targetJids.push(jid);
+            }
           }
+          if (targetJids.length === 0) continue;
 
-          // Pull all messages since lastAgentTimestamp so non-trigger
-          // context that accumulated between triggers is included.
-          const allPending = getMessagesSince(
-            chatJid,
-            lastAgentTimestamp[chatJid] || '',
-            ASSISTANT_NAME,
-          );
-          const messagesToSend =
-            allPending.length > 0 ? allPending : groupMessages;
-          const formatted = formatMessages(messagesToSend);
+          for (const targetJid of targetJids) {
+            const group = registeredGroups[targetJid];
+            const isVirtual = isVirtualJid(targetJid);
 
-          if (queue.sendMessage(chatJid, formatted)) {
-            logger.debug(
-              { chatJid, count: messagesToSend.length },
-              'Piped messages to active container',
-            );
-            lastAgentTimestamp[chatJid] =
-              messagesToSend[messagesToSend.length - 1].timestamp;
-            saveState();
-            // Show typing indicator while the container processes the piped message
-            channel
-              .setTyping?.(chatJid, true)
-              ?.catch((err) =>
-                logger.warn({ chatJid, err }, 'Failed to set typing indicator'),
+            const channel = findChannel(channels, targetJid);
+            if (!channel) {
+              logger.warn(
+                { chatJid: targetJid },
+                'No channel owns JID, skipping messages',
               );
-          } else {
-            // No active container — enqueue for a new one
-            queue.enqueueMessageCheck(chatJid);
+              continue;
+            }
+
+            const isMainGroup = group.isMain === true;
+            const needsTrigger =
+              !isMainGroup && group.requiresTrigger !== false;
+
+            // For non-main groups, only act on trigger messages.
+            // Virtual JID agents use their own trigger; regular groups use the global one.
+            if (needsTrigger) {
+              const triggerRe = isVirtual
+                ? buildTriggerPattern(group.trigger)
+                : TRIGGER_PATTERN;
+              const hasTrigger = groupMessages.some((m) =>
+                triggerRe.test(m.content.trim()),
+              );
+              if (!hasTrigger) continue;
+            }
+
+            // Pull all messages since lastAgentTimestamp so non-trigger
+            // context that accumulated between triggers is included.
+            // Use the real JID for DB queries, virtual JID for cursor.
+            const allPending = getMessagesSince(
+              chatJid,
+              lastAgentTimestamp[targetJid] || '',
+              ASSISTANT_NAME,
+            );
+            const messagesToSend =
+              allPending.length > 0 ? allPending : groupMessages;
+            const formatted = formatMessages(messagesToSend);
+
+            if (queue.sendMessage(targetJid, formatted)) {
+              logger.debug(
+                { chatJid: targetJid, count: messagesToSend.length },
+                'Piped messages to active container',
+              );
+              lastAgentTimestamp[targetJid] =
+                messagesToSend[messagesToSend.length - 1].timestamp;
+              saveState();
+              // Show typing indicator while the container processes the piped message
+              channel
+                .setTyping?.(chatJid, true)
+                ?.catch((err) =>
+                  logger.warn(
+                    { chatJid, err },
+                    'Failed to set typing indicator',
+                  ),
+                );
+            } else {
+              // No active container — enqueue for a new one
+              queue.enqueueMessageCheck(targetJid);
+            }
           }
         }
       }
@@ -431,7 +474,12 @@ async function startMessageLoop(): Promise<void> {
 function recoverPendingMessages(): void {
   for (const [chatJid, group] of Object.entries(registeredGroups)) {
     const sinceTimestamp = lastAgentTimestamp[chatJid] || '';
-    const pending = getMessagesSince(chatJid, sinceTimestamp, ASSISTANT_NAME);
+    // Use real JID for the DB query, virtual JID as the cursor key
+    const pending = getMessagesSince(
+      realJid(chatJid),
+      sinceTimestamp,
+      ASSISTANT_NAME,
+    );
     if (pending.length > 0) {
       logger.info(
         { group: group.name, pendingCount: pending.length },
