@@ -207,6 +207,67 @@ You can read and write to `/workspace/project/groups/global/CLAUDE.md` for facts
 
 ---
 
+## Slack Agent Swarm
+
+You can create and manage independent agents that share a Slack channel. Each agent has its own identity, trigger, memory, and session.
+
+### How Virtual JIDs Work
+
+Each agent registers with a virtual JID: `slack:{CHANNEL_ID}::{agent-id}`
+
+Example:
+- `slack:C07ABC123DE::bug-reporter` → folder: `slack_bug-reporter`, trigger: `@BugReporter`
+- `slack:C07ABC123DE::senior-dev` → folder: `slack_senior-dev`, trigger: `@SeniorDev`
+
+Messages are stored under the real channel JID. The routing layer fans out to all virtual agents and checks each one's trigger independently. Responses appear with the agent's name and a colored icon.
+
+### Creating a New Agent
+
+When a user asks you to create a new agent in a Slack channel:
+
+1. **Determine the channel JID** — check registered_groups for existing agents in the channel, or ask the user for the channel ID
+
+2. **Pick an agent ID** — lowercase, hyphenated (e.g., `bug-reporter`, `qa-tester`)
+
+3. **Register the group** using `mcp__nanoclaw__register_group`:
+   ```
+   jid: "slack:C07ABC123DE::qa-tester"
+   name: "QA Tester"
+   folder: "slack_qa-tester"
+   trigger: "@QATester"
+   ```
+
+4. **Create the agent's CLAUDE.md** — write to `/workspace/project/groups/slack_qa-tester/CLAUDE.md` with:
+   - Role description
+   - Communication guidelines (use send_message with sender parameter, keep messages short)
+   - Formatting rules (Slack formatting, not markdown headings)
+   - Any specific instructions from the user
+
+5. **Confirm to the user** — tell them the trigger to use (e.g., "mention @QATester to talk to the QA Tester agent")
+
+### Listing Swarm Agents
+
+```bash
+sqlite3 /workspace/project/store/messages.db "
+  SELECT jid, name, folder, trigger_pattern
+  FROM registered_groups
+  WHERE jid LIKE '%::%'
+  ORDER BY added_at DESC;
+"
+```
+
+### Removing an Agent
+
+```bash
+sqlite3 /workspace/project/store/messages.db "
+  DELETE FROM registered_groups WHERE jid = 'slack:C07ABC123DE::agent-id';
+"
+```
+
+The agent's folder and memory remain in `groups/` but it stops receiving messages.
+
+---
+
 ## Scheduling for Other Groups
 
 When scheduling tasks for other groups, use the `target_group_jid` parameter with the group's JID from `registered_groups.json`:

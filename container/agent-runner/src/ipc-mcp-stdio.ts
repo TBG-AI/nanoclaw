@@ -248,12 +248,15 @@ server.tool(
   'register_group',
   `Register a new chat/group so the agent can respond to messages there. Main group only.
 
-Use available_groups.json to find the JID for a group. The folder name must be channel-prefixed: "{channel}_{group-name}" (e.g., "whatsapp_family-chat", "telegram_dev-team", "discord_general"). Use lowercase with hyphens for the group name part.`,
+Use available_groups.json to find the JID for a group. The folder name must be channel-prefixed: "{channel}_{group-name}" (e.g., "whatsapp_family-chat", "telegram_dev-team", "discord_general"). Use lowercase with hyphens for the group name part.
+
+For multi-agent swarm: use virtual JIDs with "::" suffix (e.g., "slack:C123::bug-reporter"). Each virtual JID is an independent agent with its own trigger, session, and memory folder.`,
   {
-    jid: z.string().describe('The chat JID (e.g., "120363336345536173@g.us", "tg:-1001234567890", "dc:1234567890123456")'),
-    name: z.string().describe('Display name for the group'),
-    folder: z.string().describe('Channel-prefixed folder name (e.g., "whatsapp_family-chat", "telegram_dev-team")'),
-    trigger: z.string().describe('Trigger word (e.g., "@Andy")'),
+    jid: z.string().describe('The chat JID (e.g., "120363336345536173@g.us", "tg:-1001234567890", "slack:C123::agent-id" for virtual agent)'),
+    name: z.string().describe('Display name for the group or agent'),
+    folder: z.string().describe('Channel-prefixed folder name (e.g., "whatsapp_family-chat", "slack_bug-reporter")'),
+    trigger: z.string().describe('Trigger word (e.g., "@Andy", "@BugReporter")'),
+    requiresTrigger: z.boolean().optional().describe('Whether trigger is required (default: true). Set false for agents that should respond to all messages.'),
   },
   async (args) => {
     if (!isMain) {
@@ -263,12 +266,13 @@ Use available_groups.json to find the JID for a group. The folder name must be c
       };
     }
 
-    const data = {
+    const data: Record<string, string | boolean | undefined> = {
       type: 'register_group',
       jid: args.jid,
       name: args.name,
       folder: args.folder,
       trigger: args.trigger,
+      requiresTrigger: args.requiresTrigger,
       timestamp: new Date().toISOString(),
     };
 
