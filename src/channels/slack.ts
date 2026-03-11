@@ -12,6 +12,7 @@ import {
   RegisteredGroup,
 } from '../types.js';
 import { realJid } from '../virtual-jid.js';
+import { registerChannel } from './registry.js';
 
 // Slack's chat.postMessage API limits text to ~4000 characters per call.
 // Messages exceeding this are split into sequential chunks.
@@ -367,3 +368,12 @@ export class SlackChannel implements Channel {
     }
   }
 }
+
+// Self-register so the orchestrator discovers Slack at startup.
+registerChannel('slack', (opts) => {
+  try {
+    return new SlackChannel(opts);
+  } catch {
+    return null;
+  }
+});
