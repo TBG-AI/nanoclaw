@@ -512,6 +512,25 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  // Apply settings.json env vars to process.env so Bash subprocesses inherit them.
+  // The SDK's settingSources may not propagate these to child processes reliably.
+  const userSettingsPath = '/home/node/.claude/settings.json';
+  if (fs.existsSync(userSettingsPath)) {
+    try {
+      const settings = JSON.parse(fs.readFileSync(userSettingsPath, 'utf-8'));
+      if (settings.env && typeof settings.env === 'object') {
+        for (const [key, value] of Object.entries(settings.env)) {
+          if (typeof value === 'string' && !process.env[key]) {
+            process.env[key] = value;
+            log(`Set env from settings.json: ${key}`);
+          }
+        }
+      }
+    } catch (err) {
+      log(`Failed to read settings.json: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   // Build SDK env: merge secrets into process.env for the SDK only.
   // Secrets never touch process.env itself, so Bash subprocesses can't see them.
   const sdkEnv: Record<string, string | undefined> = { ...process.env };
