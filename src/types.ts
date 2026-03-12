@@ -31,6 +31,8 @@ export interface ContainerConfig {
   additionalMounts?: AdditionalMount[];
   timeout?: number; // Default: 300000 (5 minutes)
   model?: string; // Claude model override (e.g., "claude-sonnet-4-5-20250514")
+  slackBotToken?: string; // Per-agent Slack bot token (xoxb-...) for dedicated bot identity
+  slackAppToken?: string; // Per-agent Slack app-level token (xapp-...) for Socket Mode
 }
 
 export interface RegisteredGroup {
