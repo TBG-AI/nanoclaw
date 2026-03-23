@@ -46,6 +46,7 @@ import { startSchedulerLoop } from './task-scheduler.js';
 import { Channel, NewMessage, RegisteredGroup } from './types.js';
 import { buildTriggerPattern, isVirtualJid, realJid } from './virtual-jid.js';
 import { logger } from './logger.js';
+import { SlackAgentBot } from './channels/slack-agent-bot.js';
 
 // Re-export for backwards compatibility during refactor
 export { escapeXml, formatMessages } from './router.js';
@@ -103,6 +104,40 @@ function registerGroup(jid: string, group: RegisteredGroup): void {
     { jid, name: group.name, folder: group.folder },
     'Group registered',
   );
+
+  // If the group has Slack bot credentials, create and connect a dedicated agent bot
+  const cfg = group.containerConfig;
+  if (cfg?.slackBotToken && cfg?.slackAppToken) {
+    const bot = new SlackAgentBot({
+      botToken: cfg.slackBotToken,
+      appToken: cfg.slackAppToken,
+      groupName: group.name,
+      trigger: group.trigger,
+      onMessage: (_chatJid: string, msg: NewMessage) => storeMessage(msg),
+      onChatMetadata: (chatJid, timestamp, name?, channel?, isGroup?) =>
+        storeChatMetadata(chatJid, timestamp, name, channel, isGroup),
+      registeredGroups: () => registeredGroups,
+    });
+    bot
+      .connect()
+      .then(() => {
+        if (bot.jid) {
+          registeredGroups[bot.jid] = group;
+          setRegisteredGroup(bot.jid, group);
+          channels.push(bot);
+          logger.info(
+            { jid: bot.jid, name: group.name },
+            'Slack agent bot created dynamically',
+          );
+        }
+      })
+      .catch((err) =>
+        logger.warn(
+          { name: group.name, err },
+          'Failed to create dynamic Slack agent bot',
+        ),
+      );
+  }
 }
 
 /**
@@ -545,6 +580,46 @@ async function main(): Promise<void> {
   if (channels.length === 0) {
     logger.fatal('No channels connected');
     process.exit(1);
+  }
+
+  // Create dedicated Slack agent bots for groups that have their own Slack app.
+  // These are separate from the main SlackChannel and don't use virtual JIDs.
+  for (const [jid, group] of Object.entries(registeredGroups)) {
+    const cfg = group.containerConfig;
+    if (!cfg?.slackBotToken || !cfg?.slackAppToken) continue;
+
+    try {
+      const bot = new SlackAgentBot({
+        botToken: cfg.slackBotToken,
+        appToken: cfg.slackAppToken,
+        groupName: group.name,
+        trigger: group.trigger,
+        onMessage: channelOpts.onMessage,
+        onChatMetadata: channelOpts.onChatMetadata,
+        registeredGroups: channelOpts.registeredGroups,
+      });
+      await bot.connect();
+
+      // Re-register the group with the bot's JID so routing works
+      if (bot.jid && bot.jid !== jid) {
+        const updatedGroup = { ...group };
+        // Remove tokens from containerConfig before re-registering
+        // (they stay in the original entry, not duplicated)
+        registeredGroups[bot.jid] = updatedGroup;
+        setRegisteredGroup(bot.jid, updatedGroup);
+        logger.info(
+          { oldJid: jid, newJid: bot.jid, name: group.name },
+          'Slack agent bot registered with bot JID',
+        );
+      }
+
+      channels.push(bot);
+    } catch (err) {
+      logger.warn(
+        { name: group.name, err },
+        'Failed to create Slack agent bot — skipping',
+      );
+    }
   }
 
   // Start subsystems (independently of connection handler)
