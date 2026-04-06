@@ -46,7 +46,7 @@ report = client.generate_bug_report(minutes=60)
 
 ## Known Error Patterns in Backend-Server
 
-### Error Types (from ALL_ERROR_MAPPING in app.py)
+### Error Types (from `ALL_ERROR_MAPPING` in `infrastructure/api/rest/constants.py`, imported by `app.py`)
 - `OddsMicroserviceRequestError` — Odds service is down/returning errors
 - `StreamingServiceTimeoutError` — Streaming service timeout (504)
 - `HTTPException` — Generic HTTP errors

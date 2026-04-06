@@ -86,11 +86,13 @@ python3 /workspace/group/scripts/grafana_query.py request <request_id>
 | Area | File |
 |------|------|
 | Exception handlers | `src/backend_server/app.py` (lines 216-407) |
-| Error mapping | `src/backend_server/infrastructure/api/rest/constants.py` |
+| Error mapping (`ALL_ERROR_MAPPING`) | `src/backend_server/infrastructure/api/rest/constants.py` |
 | Odds client | `src/backend_server/infrastructure/microservices/odds_client.py` |
 | Bet service | `src/backend_server/application/services/bets/user_bet_service.py` |
 | Bet routes | `src/backend_server/infrastructure/api/rest/bet_routes.py` |
-| Middleware | `src/backend_server/infrastructure/middleware/` |
+| Metrics middleware | `src/backend_server/infrastructure/middleware/metrics_middleware.py` |
+| Request ID middleware | `src/backend_server/infrastructure/middleware/request_id.py` |
+| Logging formatter | `src/backend_server/logging_formatter.py` (**top-level, NOT under middleware/**) |
 
 ## Communication
 
