@@ -1,6 +1,46 @@
+import { execSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import { logger } from './logger.js';
+
+/**
+ * Cache for SSM-fetched values to avoid repeated AWS calls within a session.
+ * Keys are SSM parameter paths (e.g. "/tbg/shared/observability/GRAFANA_SA_TOKEN").
+ */
+const ssmCache = new Map<string, string>();
+
+/**
+ * Fetch a single SecureString parameter from AWS SSM Parameter Store.
+ * Uses the aws CLI via execSync — inherits caller's AWS credentials.
+ * Returns undefined if the fetch fails (e.g., no AWS creds, no permission,
+ * parameter missing). Errors are logged but not thrown so callers can
+ * fall back to .env gracefully.
+ */
+export function fetchSsmParameter(
+  paramName: string,
+  region: string = 'us-east-1',
+): string | undefined {
+  if (ssmCache.has(paramName)) {
+    return ssmCache.get(paramName);
+  }
+  try {
+    const stdout = execSync(
+      `aws ssm get-parameter --name "${paramName}" --with-decryption --region "${region}" --query "Parameter.Value" --output text`,
+      { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10000 },
+    );
+    const value = stdout.trim();
+    if (value && value !== 'None') {
+      ssmCache.set(paramName, value);
+      return value;
+    }
+  } catch (err) {
+    logger.debug(
+      { err, paramName },
+      'SSM fetch failed — check aws CLI, credentials, or parameter name',
+    );
+  }
+  return undefined;
+}
 
 /**
  * Parse the .env file and return values for the requested keys.
