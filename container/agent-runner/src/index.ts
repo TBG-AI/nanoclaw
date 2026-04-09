@@ -538,6 +538,21 @@ async function main(): Promise<void> {
     sdkEnv[key] = value;
   }
 
+  // GRAFANA_SA_TOKEN is a special case: unlike ANTHROPIC_API_KEY (which
+  // must stay SDK-only so random shell commands can't see it),
+  // GRAFANA_SA_TOKEN is consumed by Bash subprocesses — specifically the
+  // /debug-logs skill running python3 grafana_query.py. We want those
+  // subprocesses to inherit it via process.env.
+  //
+  // Safety: the SA token has read-only Viewer role on Grafana Cloud, so
+  // the blast radius is limited to "someone reads prod logs/metrics/traces".
+  // We still keep it OUT of the SECRET_ENV_VARS Bash-strip list so the
+  // sanitize hook doesn't remove it.
+  if (containerInput.secrets?.GRAFANA_SA_TOKEN) {
+    process.env.GRAFANA_SA_TOKEN = containerInput.secrets.GRAFANA_SA_TOKEN;
+    log('GRAFANA_SA_TOKEN exported to process.env for Bash subprocesses');
+  }
+
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   const mcpServerPath = path.join(__dirname, 'ipc-mcp-stdio.js');
 

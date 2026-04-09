@@ -15,7 +15,7 @@ import {
   IDLE_TIMEOUT,
   TIMEZONE,
 } from './config.js';
-import { readEnvFile } from './env.js';
+import { fetchSsmParameter, readEnvFile } from './env.js';
 import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { logger } from './logger.js';
 import {
@@ -214,14 +214,38 @@ function buildVolumeMounts(
 /**
  * Read allowed secrets from .env for passing to the container via stdin.
  * Secrets are never written to disk or mounted as files.
+ *
+ * GRAFANA_SA_TOKEN is the service-account token used by /debug-logs,
+ * @BugReporter, and @BugFixer to query Grafana Cloud. It lives in
+ * AWS SSM Parameter Store (source of truth) so rotation is centralized.
+ * If it's not in .env, fall back to SSM. .env takes precedence for
+ * dev overrides.
  */
 function readSecrets(): Record<string, string> {
-  return readEnvFile([
+  const secrets = readEnvFile([
     'CLAUDE_CODE_OAUTH_TOKEN',
     'ANTHROPIC_API_KEY',
     'ANTHROPIC_BASE_URL',
     'ANTHROPIC_AUTH_TOKEN',
+    'GRAFANA_SA_TOKEN',
   ]);
+
+  // SSM fallback for GRAFANA_SA_TOKEN — cached in env.ts across calls
+  if (!secrets.GRAFANA_SA_TOKEN) {
+    const ssmValue = fetchSsmParameter(
+      '/tbg/shared/observability/GRAFANA_SA_TOKEN',
+    );
+    if (ssmValue) {
+      secrets.GRAFANA_SA_TOKEN = ssmValue;
+    } else {
+      logger.debug(
+        'GRAFANA_SA_TOKEN not found in .env or SSM — /debug-logs will fail inside the container. ' +
+          'Set GRAFANA_SA_TOKEN in nanoclaw/.env or provision /tbg/shared/observability/GRAFANA_SA_TOKEN in SSM.',
+      );
+    }
+  }
+
+  return secrets;
 }
 
 function buildContainerArgs(
