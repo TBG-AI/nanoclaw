@@ -386,6 +386,62 @@ def main():
     p = sub.add_parser("request", help="Get logs by request ID")
     p.add_argument("request_id")
 
+    # slow-traces — fetch traces above a duration threshold from Tempo
+    p = sub.add_parser(
+        "slow-traces",
+        help="Find traces slower than a duration threshold (Tempo)",
+    )
+    p.add_argument(
+        "--min-duration-ms",
+        type=int,
+        default=1000,
+        help="Minimum duration in ms (default: 1000)",
+    )
+    p.add_argument("--limit", type=int, default=20)
+    p.add_argument(
+        "--service",
+        default=None,
+        help="Service name (default: backend-server)",
+    )
+
+    # slow-endpoints — list endpoints by p95/p99 over a window (Prometheus)
+    p = sub.add_parser(
+        "slow-endpoints",
+        help="List endpoints sorted by p95/p99 latency (Prometheus)",
+    )
+    p.add_argument(
+        "--minutes",
+        type=int,
+        default=15,
+        help="Window in minutes for the rate (default: 15)",
+    )
+    p.add_argument(
+        "--service",
+        default="backend-server",
+        help="Service name (default: backend-server)",
+    )
+    p.add_argument(
+        "--top",
+        type=int,
+        default=10,
+        help="Number of endpoints to return (default: 10)",
+    )
+    p.add_argument(
+        "--quantile",
+        type=float,
+        default=0.95,
+        choices=[0.50, 0.90, 0.95, 0.99],
+        help="Latency quantile to rank by (default: 0.95)",
+    )
+
+    # p99 — current p99 latency for a service (single number)
+    p = sub.add_parser("p99", help="Current p99 latency for a service")
+    p.add_argument(
+        "--service",
+        default="backend-server",
+        help="Service name (default: backend-server)",
+    )
+
     args = parser.parse_args()
     client = GrafanaClient()
 
@@ -437,6 +493,114 @@ def main():
             print(f"[{e['timestamp']}] [{e['level']}] {e['message']}")
         if not errors:
             print("No logs found for this request ID.")
+
+    elif args.command == "slow-traces":
+        resp = client.get_slow_traces(
+            min_duration_ms=args.min_duration_ms,
+            limit=args.limit,
+            service=args.service,
+        )
+        traces = resp.get("traces", []) if isinstance(resp, dict) else []
+        if not traces:
+            print(
+                f"No traces found above {args.min_duration_ms}ms "
+                f"for service={args.service or 'backend-server'}."
+            )
+        else:
+            print(
+                f"Slow traces (>{args.min_duration_ms}ms) "
+                f"for service={args.service or 'backend-server'} — top {len(traces)}:"
+            )
+            print(f"{'duration_ms':>11s}  {'trace_id':32s}  {'root_span':40s}  {'started_at'}")
+            print("-" * 110)
+            # Tempo trace search response shape varies by version. Try a couple
+            # of common field names so this still works as the API evolves.
+            for t in traces:
+                tid = t.get("traceID") or t.get("trace_id") or "?"
+                dur = t.get("durationMs") or t.get("duration_ms")
+                if dur is None:
+                    # Some Tempo responses give duration in nanoseconds
+                    dur_ns = t.get("durationNs") or t.get("duration") or 0
+                    try:
+                        dur = int(dur_ns) / 1_000_000
+                    except Exception:
+                        dur = 0
+                root = t.get("rootServiceName", "") + " " + t.get("rootTraceName", "")
+                root = root.strip()[:40]
+                started = (
+                    t.get("startTimeUnixNano")
+                    or t.get("start_time_unix_nano")
+                    or t.get("startTime", "")
+                )
+                # Convert ns timestamp to ISO if it looks like a number
+                if isinstance(started, (int, str)) and str(started).isdigit():
+                    try:
+                        from datetime import datetime, timezone
+                        started = datetime.fromtimestamp(
+                            int(started) / 1e9, tz=timezone.utc
+                        ).isoformat(timespec="seconds")
+                    except Exception:
+                        pass
+                print(f"{dur:>11.0f}  {tid:32s}  {root:40s}  {started}")
+
+    elif args.command == "slow-endpoints":
+        # Run a histogram_quantile query directly via Prom proxy.
+        # The exact metric name depends on instrumentation; try the OTEL
+        # http_server_duration_milliseconds_bucket first.
+        promql = (
+            f'topk({args.top}, '
+            f'histogram_quantile({args.quantile}, '
+            f'sum by (le, http_route, http_method) ('
+            f'rate(http_server_duration_milliseconds_bucket'
+            f'{{service_name="{args.service}"}}[{args.minutes}m]))))'
+        )
+        resp = client._prom_query(promql)
+        data = client.parse_metric_result(resp)
+        if not data:
+            print(
+                f"No latency data found for service={args.service} "
+                f"window={args.minutes}m. The metric "
+                f"http_server_duration_milliseconds_bucket may be missing — "
+                f"check that OTEL auto-instrumentation is enabled."
+            )
+        else:
+            qpct = int(args.quantile * 100)
+            print(
+                f"Top {args.top} endpoints by p{qpct} latency "
+                f"(service={args.service}, window={args.minutes}m):"
+            )
+            print(f"{'p' + str(qpct) + ' (ms)':>10s}  {'method':6s}  {'route'}")
+            print("-" * 80)
+            # Sort descending by value
+            sorted_rows = sorted(
+                data, key=lambda r: float(r.get("value", 0) or 0), reverse=True
+            )
+            for row in sorted_rows[: args.top]:
+                labels = row.get("labels", {}) or row.get("metric", {})
+                # parse_metric_result returns either dict shape; handle both
+                if isinstance(row, dict) and "metric" in row:
+                    labels = row.get("metric", {})
+                route = labels.get("http_route") or labels.get("route", "?")
+                method = labels.get("http_method") or labels.get("method", "?")
+                val = float(row.get("value", 0) or 0)
+                print(f"{val:>10.0f}  {method:6s}  {route}")
+
+    elif args.command == "p99":
+        resp = client.get_p99_latency(service=args.service)
+        data = client.parse_metric_result(resp)
+        if not data:
+            print(f"No latency data for service={args.service}")
+        else:
+            for row in data:
+                metric = row.get("metric", {}) if isinstance(row, dict) else {}
+                val = float(row.get("value", 0) or 0)
+                ep = (
+                    metric.get("http_route")
+                    or metric.get("endpoint")
+                    or metric.get("http_target")
+                    or "all"
+                )
+                print(f"  {val:>10.0f}ms  {ep}")
 
     else:
         parser.print_help()
