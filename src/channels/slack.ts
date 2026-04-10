@@ -182,7 +182,7 @@ export class SlackChannel implements Channel {
   }
 
   async sendMessage(jid: string, text: string): Promise<void> {
-    const channelId = jid.replace(/^slack:/, '');
+    const channelId = realJid(jid).replace(/^slack:/, '');
 
     if (!this.connected) {
       this.outgoingQueue.push({ jid, text });
@@ -237,7 +237,7 @@ export class SlackChannel implements Channel {
     text: string,
     sender: string,
   ): Promise<void> {
-    const channelId = jid.replace(/^slack:/, '');
+    const channelId = realJid(jid).replace(/^slack:/, '');
 
     if (!this.connected) {
       this.outgoingQueue.push({ jid, text, sender });

@@ -553,6 +553,21 @@ async function main(): Promise<void> {
     log('GRAFANA_SA_TOKEN exported to process.env for Bash subprocesses');
   }
 
+  // GitHub token — needed by gh CLI for BugReporter (create issues)
+  // and BugFixer (create PRs, check CI). Kept OUT of SECRET_ENV_VARS
+  // so Bash subprocesses can use gh.
+  if (containerInput.secrets?.GITHUB_TOKEN) {
+    process.env.GITHUB_TOKEN = containerInput.secrets.GITHUB_TOKEN;
+    log('GITHUB_TOKEN exported to process.env for gh CLI');
+  }
+
+  // Slack webhook for urgent bug alerts — BugReporter sends
+  // critical/high findings to the #bugs channel in addition to
+  // posting in #agentic-dev.
+  if (containerInput.secrets?.SLACK_WEBHOOK_BUGS) {
+    process.env.SLACK_WEBHOOK_BUGS = containerInput.secrets.SLACK_WEBHOOK_BUGS;
+    log("SLACK_WEBHOOK_BUGS exported to process.env");  }
+
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   const mcpServerPath = path.join(__dirname, 'ipc-mcp-stdio.js');
 
