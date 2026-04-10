@@ -228,6 +228,8 @@ function readSecrets(): Record<string, string> {
     'ANTHROPIC_BASE_URL',
     'ANTHROPIC_AUTH_TOKEN',
     'GRAFANA_SA_TOKEN',
+    'GITHUB_TOKEN',
+    'SLACK_WEBHOOK_BUGS',
   ]);
 
   // SSM fallback for GRAFANA_SA_TOKEN — cached in env.ts across calls
@@ -256,6 +258,11 @@ function buildContainerArgs(
 
   // Pass host timezone so container's local time matches the user's
   args.push('-e', `TZ=${TIMEZONE}`);
+
+  // GitHub CLI auth — mounted at /workspace/extra/gh-config via
+  // additionalMounts in the group's containerConfig. Tell gh where to
+  // find it since it's not at the default ~/.config/gh.
+  args.push('-e', 'GH_CONFIG_DIR=/workspace/extra/gh-config');
 
   // Run as host user so bind-mounted files are accessible.
   // Skip when running as root (uid 0), as the container's node user (uid 1000),

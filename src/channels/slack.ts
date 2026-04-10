@@ -29,24 +29,36 @@ export interface SlackChannelOpts {
   registeredGroups: () => Record<string, RegisteredGroup>;
 }
 
-// Deterministic icon assignment per sender name (colored circles)
-const SENDER_ICONS = [
-  ':large_blue_circle:',
-  ':red_circle:',
-  ':large_green_circle:',
-  ':purple_circle:',
-  ':orange_circle:',
-  ':white_circle:',
-  ':brown_circle:',
-  ':yellow_circle:',
+// Named agent icon map — each icon conveys the agent's role at a glance.
+// Semantic emojis > colored circles. Users instantly know WHO and WHAT.
+const AGENT_COLORS: Record<string, string> = {
+  'bug-reporter':   ':rotating_light:',     // 🚨 alerting — detects problems
+  'bug-fixer':      ':wrench:',             // 🔧 fixing — repairs code
+  'bug-ops':        ':dart:',               // 🎯 targeting — orchestrates pipeline
+  'pr-reviewer':    ':mag:',                // 🔍 inspecting — reviews code
+  'f2-swe':         ':zap:',               // ⚡ speed — backend features
+  'f3-swe':         ':electric_plug:',      // 🔌 connecting — external integrations
+  'ux-designer':    ':art:',                // 🎨 creating — design work
+  'daily-refactor': ':sparkles:',           // ✨ polishing — cleanup & improvement
+};
+
+// Fallback icons for unknown/new agents (hash-based)
+const FALLBACK_ICONS = [
+  ':robot_face:',
+  ':gear:',
+  ':hammer_and_wrench:',
+  ':construction:',
 ];
 
 function senderIcon(sender: string): string {
+  const lower = sender.toLowerCase().replace(/\s+/g, '-');
+  if (AGENT_COLORS[lower]) return AGENT_COLORS[lower];
+  // Hash fallback for agents not in the map
   let hash = 0;
   for (let i = 0; i < sender.length; i++) {
     hash = (hash * 31 + sender.charCodeAt(i)) | 0;
   }
-  return SENDER_ICONS[Math.abs(hash) % SENDER_ICONS.length];
+  return FALLBACK_ICONS[Math.abs(hash) % FALLBACK_ICONS.length];
 }
 
 export class SlackChannel implements Channel {
@@ -182,7 +194,7 @@ export class SlackChannel implements Channel {
   }
 
   async sendMessage(jid: string, text: string): Promise<void> {
-    const channelId = jid.replace(/^slack:/, '');
+    const channelId = realJid(jid).replace(/^slack:/, '');
 
     if (!this.connected) {
       this.outgoingQueue.push({ jid, text });
@@ -237,7 +249,7 @@ export class SlackChannel implements Channel {
     text: string,
     sender: string,
   ): Promise<void> {
-    const channelId = jid.replace(/^slack:/, '');
+    const channelId = realJid(jid).replace(/^slack:/, '');
 
     if (!this.connected) {
       this.outgoingQueue.push({ jid, text, sender });
